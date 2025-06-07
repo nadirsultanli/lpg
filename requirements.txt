@@ -1,8 +1,0 @@
-@"
-fastapi==0.104.1
-uvicorn==0.24.0
-supabase==2.0.3
-python-dotenv==1.0.0
-phonenumbers==8.13.25
-pydantic==2.5.0
-"@ | Out-File -FilePath requirements.txt -Encoding utf8
