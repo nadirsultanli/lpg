@@ -203,7 +203,7 @@ def validate_quantity(quantity: Any) -> tuple[bool, int, str]:
 # Direct DB helpers – replace the missing Supabase RPCs
 # -----------------------------------------------------------------
 def db_upsert_customer(name: str, phone: str, address: str, email: str | None):
-    """Create a customer or fetch the existing one, return row as dict"""
+    """Create a customer or return the existing one WITHOUT updating existing details"""
     try:
         # First, try to find existing customer
         existing = supabase.table("customers")\
@@ -212,25 +212,11 @@ def db_upsert_customer(name: str, phone: str, address: str, email: str | None):
             .execute()
         
         if existing.data and len(existing.data) > 0:
-            logger.info(f"Found existing customer with phone {phone}")
-            # Update the existing customer's details
-            updated = supabase.table("customers")\
-                .update({
-                    "name": name,
-                    "address": address,
-                    "email": email,
-                    "updated_at": datetime.utcnow().isoformat()
-                })\
-                .eq("phone", phone)\
-                .execute()
-            
-            if updated.data:
-                return updated.data[0]
-            else:
-                logger.error(f"Failed to update customer: {updated}")
-                raise RuntimeError("Failed to update customer")
+            # Customer exists - return as-is without updating
+            logger.info(f"Found existing customer with phone {phone}: {existing.data[0]['name']}")
+            return existing.data[0]
         else:
-            # Create new customer
+            # Create new customer only if they don't exist
             logger.info(f"Creating new customer with phone {phone}")
             row = {
                 "name": name,
@@ -447,14 +433,15 @@ async def tools(request: Request):
         return JSONResponse(status_code=500, content={"error": err_msg})
 
 async def handle_create_customer(params: Dict[str, Any], call_id: str = None) -> str:
-    """Create a new customer (or fetch existing one) with structured error handling"""
+    """Handle customer creation with better existing customer detection"""
     try:
-        name    = params.get("name", "").strip()
-        phone   = normalize_phone(params.get("phone", ""))
-        address = params.get("address", "").strip()
-        email   = params.get("email", "").strip() if params.get("email") else None
+        name = (params.get("name") or "").strip()
+        phone_raw = params.get("phone", "")
+        phone = normalize_phone(phone_raw)
+        address = (params.get("address") or "").strip()
+        email = (params.get("email") or "").strip() or None
 
-        logger.info(f"Creating customer: name={name}, phone={phone}, address={address}, email={email}")
+        logger.info(f"Creating customer: name={name}, phone={phone}, address={address}")
 
         if not name:
             return "I need your name to create an account. Could you please tell me your name?"
@@ -463,7 +450,33 @@ async def handle_create_customer(params: Dict[str, Any], call_id: str = None) ->
         if not address:
             return "I need your delivery address to create an account. Could you please provide your address?"
 
-        # Upsert customer directly in the DB
+        # Check if customer already exists first
+        try:
+            existing = supabase.table("customers")\
+                .select("*")\
+                .eq("phone", phone)\
+                .execute()
+            
+            if existing.data and len(existing.data) > 0:
+                customer = existing.data[0]
+                logger.info(f"Customer already exists: {customer['name']} (ID: {customer['id']})")
+                
+                # Store in Redis state for the call
+                if call_id:
+                    update_call_state(call_id, {
+                        "customer_id":   customer["id"],
+                        "customer_phone": phone,
+                        "customer_name":  customer["name"],
+                    })
+                
+                return (f"Welcome back, {customer['name']}! "
+                        "I found your existing account. You're all set to place orders.")
+            
+        except Exception as e:
+            logger.error(f"Error checking for existing customer: {e}")
+            # Continue to create new customer if check fails
+
+        # Create new customer only if they don't exist
         customer = db_upsert_customer(name, phone, address, email)
 
         # Store in Redis state for the call
@@ -474,17 +487,8 @@ async def handle_create_customer(params: Dict[str, Any], call_id: str = None) ->
                 "customer_name":  customer["name"],
             })
 
-        # Check if this is a new or existing customer by comparing timestamps
-        created_at = customer.get("created_at")
-        updated_at = customer.get("updated_at")
-        
-        # For existing customers, we'll have different timestamps
-        if created_at and updated_at and created_at != updated_at:
-            return (f"Welcome back, {customer['name']}! "
-                    "I found your existing account. You're all set to place orders.")
-        else:
-            return (f"Perfect! Your account has been created successfully, "
-                    f"{customer['name']}. You can now place orders for LPG cylinders.")
+        return (f"Perfect! Your account has been created successfully, "
+                f"{customer['name']}. You can now place orders for LPG cylinders.")
 
     except Exception as e:
         logger.error(f"Error in create_customer: {e}")
