@@ -577,9 +577,62 @@ async def handle_get_order_status(params: Dict[str, Any], call_id: str = None) -
         
         # Call Supabase RPC
         logger.info(f"Calling get_order_status RPC with phone: {phone}")
-        result = supabase.rpc("get_order_status", {
-            "p_phone": phone
-        }).execute()
+        # --- ❶ Look up the customer by phone ---------------------------------
+        cust_resp = (
+            supabase.table("customers")
+                    .select("id,name")
+                    .eq("phone", phone)
+                    .single()
+                    .execute()
+        )
+
+        customer = cust_resp.data
+        if not customer:
+            return ("I couldn’t find an account with that phone number. "
+                    "Would you like me to create one for you first?")
+
+        customer_id   = customer["id"]
+        customer_name = customer.get("name", "there")
+
+        # --- ❷ Grab their latest order ---------------------------------------
+        order_resp = (
+            supabase.table("orders")
+                    .select(
+                        "id,status,cylinder_size,quantity,price_kes,total_amount_kes,delivery_date"
+                    )
+                    .eq("customer_id", customer_id)
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+        )
+
+        if not order_resp.data:
+            return (f"Hello {customer_name}! I don’t see any orders on file yet. "
+                    "Would you like to place one now?")
+
+        order = order_resp.data[0]
+
+        # --- ❸ Build a friendly voice reply ----------------------------------
+        order_id      = str(order["id"])[:8]
+        status        = order.get("status", "pending")
+        cylinder_size = order["cylinder_size"]
+        qty           = order["quantity"]
+        total         = int(order["total_amount_kes"])
+        deliver_on    = order.get("delivery_date", "soon")
+
+        status_text = {
+            "pending":          "is being processed",
+            "confirmed":        "has been confirmed",
+            "out_for_delivery": "is out for delivery",
+            "delivered":        "has been delivered",
+            "cancelled":        "has been cancelled",
+        }.get(status, "is in progress")
+
+        return (f"I found your most recent order, {customer_name}. "
+                f"Order {order_id} for {qty} × {cylinder_size} cylinder(s) "
+                f"(total {total} KES) {status_text}. "
+                f"Delivery is scheduled for {deliver_on}.")
+
         
         logger.info(f"RPC Result Data: {result.data}")
         
