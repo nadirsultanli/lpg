@@ -172,40 +172,54 @@ async function handleCreateCustomer(params: any, supabase: any): Promise<string>
       return "I need your delivery address to create an account. Could you please provide your address?"
     }
 
-    const { data: existing } = await supabase
+    // Check if customer already exists
+    const { data: existing, error: existingError } = await supabase
       .from('customers')
       .select('*')
       .eq('phone', phone)
       .single()
 
-    if (existing) {
-      const { data: updated } = await supabase
-        .from('customers')
-        .update({
-          name,
-          address,
-          email,
-          updated_at: new Date().toISOString()
-        })
-        .eq('phone', phone)
-        .select()
-        .single()
+    if (existing && !existingError) {
+      // Customer exists - return existing details WITHOUT updating
+      console.log(`Found existing customer: ${existing.name} (ID: ${existing.id})`)
+      return `Welcome back, ${existing.name}! I found your existing account. You're all set to place orders.`
+    } 
+    
+    // Create new customer only if they don't exist
+    console.log(`Creating new customer with phone ${phone}`)
+    const { data: newCustomer, error: insertError } = await supabase
+      .from('customers')
+      .insert({
+        name,
+        phone,
+        address,
+        email
+      })
+      .select()
+      .single()
 
-      return `Welcome back, ${updated.name}! I found your existing account. You're all set to place orders.`
-    } else {
-      const { data: newCustomer } = await supabase
-        .from('customers')
-        .insert({
-          name,
-          phone,
-          address,
-          email
-        })
-        .select()
-        .single()
-
-      return `Perfect! Your account has been created successfully, ${newCustomer.name}. You can now place orders for LPG cylinders.`
+    if (insertError) {
+      console.error('Error creating customer:', insertError)
+      
+      // Handle unique constraint violation (customer might exist now)
+      if (insertError.code === '23505') {
+        // Try to fetch the existing customer
+        const { data: existingCustomer } = await supabase
+          .from('customers')
+          .select('*')
+          .eq('phone', phone)
+          .single()
+        
+        if (existingCustomer) {
+          return `Welcome back, ${existingCustomer.name}! I found your existing account. You're all set to place orders.`
+        }
+      }
+      
+      throw insertError
     }
+
+    console.log(`Successfully created customer: ${newCustomer.id}`)
+    return `Perfect! Your account has been created successfully, ${newCustomer.name}. You can now place orders for LPG cylinders.`
 
   } catch (error) {
     console.error('Error in create_customer:', error)
